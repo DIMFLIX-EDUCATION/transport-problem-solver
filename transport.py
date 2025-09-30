@@ -23,6 +23,7 @@ from typing import List, Tuple, Optional, Dict, Set
 import math
 import itertools
 import copy
+import argparse
 
 # ======== INPUT_DATA ========
 # Пример задания
@@ -36,6 +37,10 @@ COSTS = [
 # ============================
 
 Number = int
+
+# Настройки вывода/алгоритма
+# Какое начальное решение подавать в метод потенциалов: 'BEST'|'NW'|'MIN'|'VOGEL'
+POTENTIALS_START = 'BEST'
 
 @dataclass
 class Solution:
@@ -79,6 +84,11 @@ def balance_problem(a: List[int], b: List[int], C: List[List[int]]):
 
 # ---------- Рисование таблиц «как на листе» ----------
 
+SUB_DIGITS = str.maketrans('0123456789', '₀₁₂₃₄₅₆₇₈₉')
+
+def _sub(n: int) -> str:
+    return str(n).translate(SUB_DIGITS)
+
 def _format_F_formula(C: List[List[int]], X: List[List[int]]) -> str:
     terms: List[str] = []
     for i in range(len(C)):
@@ -118,7 +128,7 @@ def draw_table(C: List[List[int]], X: List[List[int]], a: List[int], b: List[int
         row_c = f"{left:<{LEFT}}|" + "|".join(f"{C[i][j]:^{W}}" for j in range(n)) + "|"
         if potentials is not None and potentials.u:
             uval = potentials.u[i]
-            row_c += f"   u{i+1}={uval if uval is not None else '-'}"
+            row_c += f"   u{_sub(i+1)}={uval if uval is not None else '-'}"
         lines.append(row_c)
         row_x = f"{'':<{LEFT}}|"
         for j in range(n):
@@ -128,7 +138,7 @@ def draw_table(C: List[List[int]], X: List[List[int]], a: List[int], b: List[int
         lines.append(row_x)
         lines.append(hline())
     if potentials is not None and potentials.v:
-        vline = f"{'v:':<{LEFT}}|" + "|".join(
+        vline = f"{'V:':<{LEFT}}|" + "|".join(
             f"{(potentials.v[j] if potentials.v[j] is not None else '-'):^{W}}" for j in range(n)
         ) + "|"
         lines.append(vline)
@@ -141,8 +151,7 @@ def draw_table(C: List[List[int]], X: List[List[int]], a: List[int], b: List[int
         lines.append("ΔC = C - (u⊕v):")
         # печать дельт в виде таблицы
         lines.append(hline())
-        drow1 = f"{'':<{LEFT}}|" + "|".join(f"{('Cij-u_i-v_j'):^{W}}" for _ in range(n)) + "|"  # заглушка шапки
-        # не нужна шапка формулы в каждой колонке — сразу значения
+        # значения
         for i in range(m):
             dline = f"{'':<{LEFT}}|" + "|".join(
                 f"{(deltas[i][j] if deltas[i][j] is not None else '-'):^{W}}" for j in range(n)
@@ -472,6 +481,36 @@ def find_cycle_in_basis(m: int, n: int, basis: Set[Tuple[int,int]], enter: Tuple
     return cycle
 
 
+def _format_friend_equations(C: List[List[int]], basis: Set[Tuple[int,int]], pots: Potentials) -> str:
+    # выводим список равенств u_i + V_j = c_ij только для базисных клеток, как в тетрадном стиле
+    pairs = sorted(list(basis))
+    lines: List[str] = []
+    for i, j in pairs:
+        cij = C[i][j]
+        lines.append(f"•    u{_sub(i+1)} + V{_sub(j+1)} = {cij}")
+    return "\n".join(lines)
+
+
+def _format_named_matrix(name: str, M: List[List[Optional[int]]]) -> str:
+    # печать матрицы в виде вертикальных «скобок» как в тетрадке
+    if not M:
+        return name + " = | |"
+    m, n = len(M), len(M[0])
+    # ширина столбцов
+    col_w = [1]*n
+    for j in range(n):
+        col_w[j] = max(len(str(M[i][j])) if M[i][j] is not None else 1 for i in range(m))
+    lines = [f"{name} = "]
+    for i in range(m):
+        row_elems = []
+        for j in range(n):
+            val = M[i][j]
+            s = str(val) if val is not None else "-"
+            row_elems.append(f"{s:>{col_w[j]}}")
+        lines.append("| " + "  ".join(row_elems) + " |")
+    return "\n".join(lines)
+
+
 def modi_optimize(a: List[int], b: List[int], C: List[List[int]], sol: Solution,
                   verbose_steps: bool = True) -> Tuple[Solution, List[str]]:
     m, n = len(a), len(b)
@@ -497,7 +536,21 @@ def modi_optimize(a: List[int], b: List[int], C: List[List[int]], sol: Solution,
                     best_cell = (i,j)
         # печать текущего шага
         block_title = f"Метод потенциалов — шаг {step}"
-        log_blocks.append(draw_table(C, X, a, b, block_title, pots, R, show_zero_alloc=False, pretty=True, show_formula=True))
+        base_block = draw_table(C, X, a, b, block_title, pots, None, show_zero_alloc=False, pretty=True, show_formula=True)
+        # "тетрадные" дополнения: список равенств, матрица C_k = u⊕v, и ΔC_k
+        # матрица C_k = u_i + v_j
+        uv_matrix: List[List[Optional[int]]] = [[None]*n for _ in range(m)]
+        for i in range(m):
+            for j in range(n):
+                if pots.u[i] is not None and pots.v[j] is not None:
+                    uv_matrix[i][j] = pots.u[i] + pots.v[j]
+                else:
+                    uv_matrix[i][j] = None
+        eq_text = _format_friend_equations(C, basis, pots)
+        Ck_text = _format_named_matrix(f"C{_sub(step)}", uv_matrix)
+        dCk_text = _format_named_matrix(f"ΔC{_sub(step)}", R)
+        block_full = base_block + "\nУравнения:\n" + eq_text + "\n\nМатрицы:\n" + Ck_text + "\n\n" + dCk_text
+        log_blocks.append(block_full)
         log_blocks.append("")
         if best_cell is None:
             # оптимально
@@ -552,7 +605,18 @@ def modi_optimize(a: List[int], b: List[int], C: List[List[int]], sol: Solution,
     final_title = "Метод потенциалов — итоговый план"
     pots = compute_potentials(m, n, C, basis)
     R = reduced_costs(C, pots)
-    block = draw_table(C, X, a, b, final_title, pots, R, pretty=True, show_formula=True)
+    base_block = draw_table(C, X, a, b, final_title, pots, None, pretty=True, show_formula=True)
+    # печатаем C_step и ΔC_step для финальной таблицы
+    uv_matrix: List[List[Optional[int]]] = [[None]*n for _ in range(m)]
+    for i in range(m):
+        for j in range(n):
+            if pots.u[i] is not None and pots.v[j] is not None:
+                uv_matrix[i][j] = pots.u[i] + pots.v[j]
+            else:
+                uv_matrix[i][j] = None
+    Ck_text = _format_named_matrix(f"C{_sub(step)}", uv_matrix)
+    dCk_text = _format_named_matrix(f"ΔC{_sub(step)}", R)
+    block = base_block + "\nУравнения:\n" + _format_friend_equations(C, basis, pots) + "\n\nМатрицы:\n" + Ck_text + "\n\n" + dCk_text
     # найдём альтернативные оптимальные клетки (ΔC=0 вне базиса)
     alt_zeros: List[Tuple[int,int]] = []
     for i in range(m):
@@ -568,7 +632,7 @@ def modi_optimize(a: List[int], b: List[int], C: List[List[int]], sol: Solution,
 
 # ---------- Высокоуровневая процедура ----------
 
-def solve_and_print(a0: List[int], b0: List[int], C0: List[List[int]]):
+def solve_and_print(a0: List[int], b0: List[int], C0: List[List[int]], start_kind: Optional[str] = None):
     # балансировка
     a, b, C, bal = balance_problem(a0, b0, C0)
     if bal is not None:
@@ -590,15 +654,23 @@ def solve_and_print(a0: List[int], b0: List[int], C0: List[List[int]]):
     print(draw_table(C, sol_vg.x, a, b, "Метод Фогеля", pretty=True, show_formula=True))
     print()
 
-    # выбрать лучшее из трёх
-    costs = [
-        (total_cost(C, sol_nw.x), 'NW', sol_nw),
-        (total_cost(C, sol_mc.x), 'MIN', sol_mc),
-        (total_cost(C, sol_vg.x), 'VOGEL', sol_vg),
-    ]
-    costs.sort()
-    best_cost, best_name, best_sol = costs[0]
-    print(f"Выбрано начальное решение для метода потенциалов: {best_name} (стоимость {best_cost})")
+    # выбрать начальное решение для метода потенциалов
+    choice = (start_kind or POTENTIALS_START).upper()
+    if choice == 'NW':
+        best_name, best_sol = 'NW', sol_nw
+    elif choice == 'MIN':
+        best_name, best_sol = 'MIN', sol_mc
+    elif choice == 'VOGEL':
+        best_name, best_sol = 'VOGEL', sol_vg
+    else:
+        costs = [
+            (total_cost(C, sol_nw.x), 'NW', sol_nw),
+            (total_cost(C, sol_mc.x), 'MIN', sol_mc),
+            (total_cost(C, sol_vg.x), 'VOGEL', sol_vg),
+        ]
+        costs.sort()
+        _, best_name, best_sol = costs[0]
+    print(f"Выбрано начальное решение для метода потенциалов: {best_name}")
     print()
 
     # метод потенциалов
@@ -618,5 +690,9 @@ def solve_and_print(a0: List[int], b0: List[int], C0: List[List[int]]):
 
 
 if __name__ == "__main__":
-    solve_and_print(SUPPLY, DEMAND, COSTS)
+    parser = argparse.ArgumentParser(description='Транспортная задача: методы и метод потенциалов')
+    parser.add_argument('--start', choices=['BEST','NW','MIN','VOGEL'], default=None,
+                        help='Какое начальное решение подавать в метод потенциалов (по умолчанию POTENTIALS_START в файле)')
+    args = parser.parse_args()
+    solve_and_print(SUPPLY, DEMAND, COSTS, start_kind=args.start)
 
